@@ -39,6 +39,7 @@ static void print_usage() {
     "  -a analyze-noise-profile\n"
     "  -d denoise-noise-profile\n"
     "  -r denoise-rate\n"
+    "  -s smoothing-bandwidth\n"
     "  -i processing-interval-samples\n");
   exit(1);
 }
@@ -48,6 +49,7 @@ FILE* fp_denoise_noise_profile = NULL;
 FILE* fp_wavin = NULL;
 FILE* fp_wavout = NULL;
 FP_TYPE denoise_rate = 1.0;
+FP_TYPE smoothing_bandwidth = 500.0;
 int specified_nhop = 0;
 int nhop = 0; // will be sample-rate-dependent
 int nfft = 0;
@@ -106,12 +108,18 @@ int main_denoise(FP_TYPE* x, int nx, int nbit, int fs) {
   stft(x, nx, nhop, nfrm, hop_factor, pad_factor, & normfc, NULL,
     spec_magn, spec_phse);
 
-  for(int i = 0; i < nfrm; i ++)
+  FP_TYPE* gain = calloc(ns, sizeof(FP_TYPE));
+  FP_TYPE smoothing_bins = smoothing_bandwidth / fs * nfft / 2.0;
+  for(int i = 0; i < nfrm; i ++) {
     for(int j = 0; j < ns; j ++) {
       FP_TYPE power = spec_magn[i][j] * spec_magn[i][j] + M_EPS;
-      spec_magn[i][j] *=
-        sqrt(fmax(0, power - spec_mean[j] * denoise_rate) / power);
+      gain[j] = fmax(0, 1.0 - spec_mean[j] * denoise_rate / power);
     }
+    FP_TYPE* smooth_gain = moving_avg(gain, ns, smoothing_bins);
+    for(int j = 0; j < ns; j ++)
+      spec_magn[i][j] *= fmax(gain[j], sqrt(smooth_gain[j]));
+    free(smooth_gain);
+  }
   
   int ny = nx;
   FP_TYPE* y = istft(spec_magn, spec_phse, nhop, nfrm,
@@ -148,7 +156,7 @@ int main(int argc, char** argv) {
   int c;
   fp_wavin = stdin;
   fp_wavout = stdout;
-  while((c = getopt(argc, argv, "a:d:r:i:h")) != -1) {
+  while((c = getopt(argc, argv, "a:d:r:s:i:h")) != -1) {
     switch(c) {
     case 'a':
       fp_analyze_noise_profile = fopen(optarg, "wb");
@@ -166,6 +174,9 @@ int main(int argc, char** argv) {
     break;
     case 'r':
       denoise_rate = atof(optarg);
+    break;
+    case 's':
+      smoothing_bandwidth = atof(optarg);
     break;
     case 'i':
       specified_nhop = atoi(optarg);

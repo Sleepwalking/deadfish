@@ -44,6 +44,9 @@ static void print_usage() {
   exit(1);
 }
 
+#define OPERATION_NOISE_PROFILE   0
+#define OPERATION_DENOISE         1
+
 FILE* fp_analyze_noise_profile = NULL;
 FILE* fp_denoise_noise_profile = NULL;
 FILE* fp_wavin = NULL;
@@ -56,7 +59,16 @@ int nfft = 0;
 int pad_factor = 2;
 int hop_factor = 4;
 
-int main_analyze(FP_TYPE* x, int nx, int fs) {
+// the current audio
+FP_TYPE* x = NULL;
+int nx = 0;
+int fs = 0;
+int nbit = 0;
+
+int operation_chain[128];
+int num_operation = 0;
+
+int main_analyze() {
   int nfrm = nx / nhop;
   int ns = nfft / 2 + 1;
   FP_TYPE** spec_magn = malloc2d(nfrm, ns, sizeof(FP_TYPE));
@@ -76,10 +88,13 @@ int main_analyze(FP_TYPE* x, int nx, int fs) {
   }
   free(spec_mean);
   free2d(spec_magn, nfrm);
+
+  nx = 0;
+
   return 1;
 }
 
-int main_denoise(FP_TYPE* x, int nx, int nbit, int fs) {
+int main_denoise() {
   int nfrm = nx / nhop;
   int ns = nfft / 2 + 1;
 
@@ -124,8 +139,9 @@ int main_denoise(FP_TYPE* x, int nx, int nbit, int fs) {
   int ny = nx;
   FP_TYPE* y = istft(spec_magn, spec_phse, nhop, nfrm,
     hop_factor, pad_factor, normfc, & ny);
-  wavwrite_fp(y, ny, fs, nbit, fp_wavout);
-  free(y);
+  free(x);
+  x = y;
+  nx = ny;
 
   free(spec_mean);
   free2d(spec_magn, nfrm);
@@ -134,21 +150,24 @@ int main_denoise(FP_TYPE* x, int nx, int nbit, int fs) {
 }
 
 int main_deadfish() {
-  int fs, nbit, nx;
-  FP_TYPE* x = wavread_fp(fp_wavin, & fs, & nbit, & nx);
+  x = wavread_fp(fp_wavin, & fs, & nbit, & nx);
   nhop = pow(2, ceil(log2(fs * 0.004)));
   if(specified_nhop != 0) nhop = specified_nhop;
   nfft = nhop * pad_factor * hop_factor;
+  
+  for(int i = 0; i < num_operation; i ++) {
+    if(operation_chain[i] == OPERATION_NOISE_PROFILE) {
+      if(! main_analyze()) return 0;
+    } else
+    if(operation_chain[i] == OPERATION_DENOISE) {
+      if(! main_denoise()) return 0;
+    }
+  }
 
-  int ret = 1;
-  if(fp_analyze_noise_profile) {
-    ret = main_analyze(x, nx, fs);
-  }
-  if(fp_denoise_noise_profile) {
-    ret = main_denoise(x, nx, nbit, fs);
-  }
+  if(fp_wavout != NULL)
+    wavwrite_fp(x, nx, fs, nbit, fp_wavout);
   free(x);
-  return ret;
+  return 1;
 }
 
 extern char* optarg;
@@ -164,6 +183,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Cannot write to %s.\n", optarg);
         exit(1);
       }
+      operation_chain[num_operation ++] = OPERATION_NOISE_PROFILE;
     break;
     case 'd':
       fp_denoise_noise_profile = fopen(optarg, "rb");
@@ -171,6 +191,7 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Cannot open %s.\n", optarg);
         exit(1);
       }
+      operation_chain[num_operation ++] = OPERATION_DENOISE;
     break;
     case 'r':
       denoise_rate = atof(optarg);

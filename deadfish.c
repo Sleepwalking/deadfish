@@ -183,14 +183,10 @@ int main(int argc, char** argv) {
       exit(1);
     }
     if(optind < argc - 1) {
-      if(! strcmp(argv[optind + 1], "-n"))
-        fp_wavout = NULL;
-      else {
-        fp_wavout = fopen(argv[optind + 1], "wb");
-        if(fp_wavout == NULL) {
-          fprintf(stderr, "Cannot write to %s.\n", argv[optind + 1]);
-          exit(1);
-        }
+      fp_wavout = fopen(argv[optind + 1], "wb");
+      if(fp_wavout == NULL) {
+        fprintf(stderr, "Cannot write to %s.\n", argv[optind + 1]);
+        exit(1);
       }
     }
   }

@@ -18,7 +18,7 @@ How to Use
 
 First generate a noise profile from a .wav file that contains only noisy samples.
 
-`deadfish noise.wav -n -a noise-profile`
+`deadfish noise.wav -a noise-profile`
 
 Then apply the noise profile on to the .wav file you want to denoise.
 

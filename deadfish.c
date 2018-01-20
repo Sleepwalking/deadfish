@@ -39,7 +39,7 @@ static void print_usage() {
     "  -a analyze-noise-profile\n"
     "  -d denoise-noise-profile\n"
     "  -r denoise-rate\n"
-    "  -i processing-interval-samples");
+    "  -i processing-interval-samples\n");
   exit(1);
 }
 

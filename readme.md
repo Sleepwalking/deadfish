@@ -1,7 +1,7 @@
 DEADFISH
 ===
 
-A very simple .wav noise reduction tool. I wrote this tool because the algorithm implemented by SoX has some flaws in the short-time Fourier transform, and fixing it is likely to take more lines than rewriting one.
+A very simple .wav noise reduction tool with some extra features. I wrote this tool because the algorithm implemented by SoX has some flaws in the short-time Fourier transform, and fixing it is likely to take more lines than rewriting one.
 
 LICENSE: BSD
 
@@ -14,7 +14,7 @@ LICENSE: BSD
 How to Use
 ---
 
-###An example
+### Denoising
 
 First generate a noise profile from a .wav file that contains only noisy samples.
 
@@ -25,6 +25,28 @@ Then apply the noise profile on to the .wav file you want to denoise.
 `deadfish input.wav output.wav -d noise-profile`
 
 The degree/rate of noise reduction can be controlled using option `-r`. The default is `-r 1.0`.
+
+### Look-ahead Compression
+
+Apply look-ahead compression to input.wav with threshold at 0.1 amplitude level and a compression ratio of 0.2.
+
+`deadfish input.wav output.wav -c 0.1,0.2`
+
+The time-resolution can be controlled by the `-i` option; the unit is in seconds.
+
+### Absolute Normalization
+
+Set the maximum amplitude to 0.5.
+
+`deadfish input.wav output.wav -n 0.5`
+
+### Cascading Operations
+
+Reduce noise -> normalize to 0.3 absolute amplitude -> compress -> normalize again
+
+`deadfish input.wav output.wav -d noise-profile -n 0.3 -c 0.1,0.2 -n 0.3`
+
+### 
 
 How to Compile
 ---

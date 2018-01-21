@@ -40,20 +40,33 @@ static void print_usage() {
     "  -d denoise-noise-profile\n"
     "  -r denoise-rate\n"
     "  -s smoothing-bandwidth\n"
-    "  -i processing-interval-samples\n");
+    "  -c compression-threshold,damping-ratio\n"
+    "  -n normalize-absolute-maximum\n"
+    "  -i processing-interval\n");
   exit(1);
 }
 
 #define OPERATION_NOISE_PROFILE   0
 #define OPERATION_DENOISE         1
+#define OPERATION_COMPRESS        2
+#define OPERATION_ABSNORMALIZE    3
+
+typedef struct {
+  int type;
+  FP_TYPE compression_threshold;
+  FP_TYPE compression_damping;
+  FP_TYPE normalization_max;
+} operation;
 
 FILE* fp_analyze_noise_profile = NULL;
 FILE* fp_denoise_noise_profile = NULL;
 FILE* fp_wavin = NULL;
 FILE* fp_wavout = NULL;
+
 FP_TYPE denoise_rate = 1.0;
 FP_TYPE smoothing_bandwidth = 500.0;
-int specified_nhop = 0;
+
+int specified_thop = 0;
 int nhop = 0; // will be sample-rate-dependent
 int nfft = 0;
 int pad_factor = 2;
@@ -65,8 +78,9 @@ int nx = 0;
 int fs = 0;
 int nbit = 0;
 
-int operation_chain[128];
+operation operation_chain[128];
 int num_operation = 0;
+operation op; // the current operation
 
 int main_analyze() {
   int nfrm = nx / nhop;
@@ -135,6 +149,7 @@ int main_denoise() {
       spec_magn[i][j] *= fmax(gain[j], sqrt(smooth_gain[j]));
     free(smooth_gain);
   }
+  free(gain);
   
   int ny = nx;
   FP_TYPE* y = istft(spec_magn, spec_phse, nhop, nfrm,
@@ -149,18 +164,65 @@ int main_denoise() {
   return 1;
 }
 
+int main_compress() {
+  int nfrm = nx / nhop;
+  FP_TYPE* w = hanning(nhop * 2);
+  for(int i = 0; i < nfrm; i ++) {
+    int center = i * nhop;
+    FP_TYPE* xfrm = fetch_frame(x, nx, center, nhop * 2);
+    FP_TYPE level = 0;
+    for(int j = 0; j < nhop * 2; j ++)
+      level = fmax(level, fabs(xfrm[j]));
+    FP_TYPE gain = 1.0;
+    if(level > op.compression_threshold) {
+      gain = ((level - op.compression_threshold) * op.compression_damping +
+        op.compression_threshold) / (level + M_EPS);
+    }
+    for(int j = 0; j < nhop * 2; j ++) {
+      int idx = center + j - nhop;
+      if(idx >= 0 && idx < nx)
+        x[idx] += xfrm[j] * w[j] * (gain - 1.0);
+    }
+    free(xfrm);
+  }
+  free(w);
+  return 1;
+}
+
+int main_absnormalize() {
+  FP_TYPE absmax = 0;
+  for(int i = 0; i < nx; i ++)
+    absmax = fmax(absmax, fabs(x[i]));
+  FP_TYPE gain = op.normalization_max / absmax;
+  for(int i = 0; i < nx; i ++)
+    x[i] *= gain;
+  return 1;
+}
+
 int main_deadfish() {
   x = wavread_fp(fp_wavin, & fs, & nbit, & nx);
-  nhop = pow(2, ceil(log2(fs * 0.004)));
-  if(specified_nhop != 0) nhop = specified_nhop;
-  nfft = nhop * pad_factor * hop_factor;
   
   for(int i = 0; i < num_operation; i ++) {
-    if(operation_chain[i] == OPERATION_NOISE_PROFILE) {
+    op = operation_chain[i];
+    if(op.type == OPERATION_NOISE_PROFILE) {
+      nhop = pow(2, ceil(log2(fs * 0.004)));
+      if(specified_thop != 0) nhop = pow(2, round(log2(specified_thop * fs)));
+      nfft = nhop * pad_factor * hop_factor;
       if(! main_analyze()) return 0;
     } else
-    if(operation_chain[i] == OPERATION_DENOISE) {
+    if(op.type == OPERATION_DENOISE) {
+      nhop = pow(2, ceil(log2(fs * 0.004)));
+      if(specified_thop != 0) nhop = pow(2, round(log2(specified_thop * fs)));
+      nfft = nhop * pad_factor * hop_factor;
       if(! main_denoise()) return 0;
+    } else
+    if(op.type == OPERATION_COMPRESS) {
+      nhop = round(fs * 0.03);
+      if(specified_thop != 0) nhop = round(specified_thop * fs);
+      if(! main_compress()) return 0;
+    } else
+    if(op.type == OPERATION_ABSNORMALIZE) {
+      if(! main_absnormalize()) return 0;
     }
   }
 
@@ -175,7 +237,9 @@ int main(int argc, char** argv) {
   int c;
   fp_wavin = stdin;
   fp_wavout = stdout;
-  while((c = getopt(argc, argv, "a:d:r:s:i:h")) != -1) {
+  while((c = getopt(argc, argv, "a:d:r:s:c:n:i:h")) != -1) {
+    int i;
+    operation top_op;
     switch(c) {
     case 'a':
       fp_analyze_noise_profile = fopen(optarg, "wb");
@@ -183,7 +247,8 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Cannot write to %s.\n", optarg);
         exit(1);
       }
-      operation_chain[num_operation ++] = OPERATION_NOISE_PROFILE;
+      top_op.type = OPERATION_NOISE_PROFILE;
+      operation_chain[num_operation ++] = top_op;
     break;
     case 'd':
       fp_denoise_noise_profile = fopen(optarg, "rb");
@@ -191,7 +256,8 @@ int main(int argc, char** argv) {
         fprintf(stderr, "Cannot open %s.\n", optarg);
         exit(1);
       }
-      operation_chain[num_operation ++] = OPERATION_DENOISE;
+      top_op.type = OPERATION_DENOISE;
+      operation_chain[num_operation ++] = top_op;
     break;
     case 'r':
       denoise_rate = atof(optarg);
@@ -199,9 +265,29 @@ int main(int argc, char** argv) {
     case 's':
       smoothing_bandwidth = atof(optarg);
     break;
+    case 'c':
+      i = 0;
+      while(optarg[i] != ',') {
+        if(optarg[i] == 0) {
+          fprintf(stderr, "-c option requires two comma-separated "
+            "parameters.\n");
+          exit(1);
+        }
+        i ++;
+      }
+      optarg[i] = 0;
+      top_op.type = OPERATION_COMPRESS;
+      top_op.compression_threshold = atof(optarg);
+      top_op.compression_damping = atof(optarg + i + 1);
+      operation_chain[num_operation ++] = top_op;
+    break;
+    case 'n':
+      top_op.type = OPERATION_ABSNORMALIZE;
+      top_op.normalization_max = atof(optarg);
+      operation_chain[num_operation ++] = top_op;
+    break;
     case 'i':
-      specified_nhop = atoi(optarg);
-      specified_nhop = pow(2, round(log2(specified_nhop)));
+      specified_thop = atof(optarg);
     break;
     case 'h':
       print_usage();

@@ -209,6 +209,7 @@ int main_deadfish() {
       if(specified_thop != 0) nhop = pow(2, round(log2(specified_thop * fs)));
       nfft = nhop * pad_factor * hop_factor;
       if(! main_analyze()) return 0;
+      free(x); return 1;
     } else
     if(op.type == OPERATION_DENOISE) {
       nhop = pow(2, ceil(log2(fs * 0.004)));

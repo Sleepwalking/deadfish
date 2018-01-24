@@ -42,6 +42,7 @@ static void print_usage() {
     "  -s smoothing-bandwidth\n"
     "  -c compression-threshold,damping-ratio\n"
     "  -n normalize-absolute-maximum\n"
+    "  -l (measure-lkfs-loudness)\n"
     "  -i processing-interval\n");
   exit(1);
 }
@@ -50,6 +51,7 @@ static void print_usage() {
 #define OPERATION_DENOISE         1
 #define OPERATION_COMPRESS        2
 #define OPERATION_ABSNORMALIZE    3
+#define OPERATION_MEASURE_LKFS    4
 
 typedef struct {
   int type;
@@ -81,6 +83,78 @@ int nbit = 0;
 operation operation_chain[128];
 int num_operation = 0;
 operation op; // the current operation
+
+typedef struct {
+  FP_TYPE loudness_total;
+  FP_TYPE* loudness_inst;
+  int size, interval_48k;
+} lkfs;
+
+static void delete_lkfs(lkfs* dst) {
+  if(dst == NULL) return;
+  free(dst -> loudness_inst);
+  free(dst);
+}
+
+static lkfs* lkfs_loudness(FP_TYPE* x, int nx, int fs, int nhop) {
+  // Resample to 48 kHz.
+  FP_TYPE* x0 = rresample(x, nx, 48000.0f / fs, & nx);
+  nhop = nhop * 48000 / fs;
+  fs = 48000;
+  // 1st stage filtering
+  FP_TYPE B1[3] = {1.53512485958697, -2.69169618940638, 1.19839281085285};
+  FP_TYPE A1[3] = {1.0, -1.69065929318241, 0.73248077421585};
+  FP_TYPE* x1 = filter(B1, 3, A1, 3, x0, nx);
+  free(x0);
+  // 2nd stage filtering
+  FP_TYPE B2[3] = {1.0, -2.0, 1.0};
+  FP_TYPE A2[3] = {1.0, -1.99004745483398, 0.99007225036621};
+  FP_TYPE* x2 = filter(B2, 3, A2, 3, x1, nx);
+  free(x1);
+  // Measure the short-time power.
+  int framesize = nhop * 4;
+  int nfrm = max(1, (nx - framesize) / nhop);
+  FP_TYPE* z = calloc(nfrm, sizeof(FP_TYPE));
+  FP_TYPE* l = calloc(nfrm, sizeof(FP_TYPE));
+  for(int i = 0; i < nfrm; i ++) {
+    FP_TYPE* xfrm = fetch_frame(x2, nx, (i + 2) * nhop, framesize);
+    for(int j = 0; j < framesize; j ++) z[i] += xfrm[j] * xfrm[j];
+    z[i] /= framesize;
+    l[i] = -0.691 + 10.0 * log10(z[i]);
+    free(xfrm);
+  }
+  // Compute the relative threshold.
+  FP_TYPE power_sum = 0; int power_count = 0;
+  for(int i = 0; i < nfrm; i ++) {
+    if(l[i] > -70) {
+      power_sum += z[i];
+      power_count ++;
+    }
+  }
+  FP_TYPE threshold = -70;
+  if(power_count > 0) {
+    power_sum /= power_count;
+    threshold = -0.691 + 10.0 * log10(power_sum) - 10.0;
+  }
+  // Compute the total loudness;
+  power_sum = 0; power_count = 0;
+  for(int i = 0; i < nfrm; i ++) {
+    if(l[i] > threshold) {
+      power_sum += z[i];
+      power_count ++;
+    }
+  }
+  free(z);
+  free(x2);
+
+  lkfs* ret = malloc(sizeof(lkfs));
+  ret -> loudness_total = power_count > 0 ?
+    -0.691 + 10.0 * log10(power_sum / power_count) : -70.0;
+  ret -> loudness_inst = l;
+  ret -> size = nfrm;
+  ret -> interval_48k = nhop;
+  return ret;
+}
 
 int main_analyze() {
   int nfrm = nx / nhop;
@@ -199,6 +273,17 @@ int main_absnormalize() {
   return 1;
 }
 
+int main_lkfs() {
+  lkfs* measure = lkfs_loudness(x, nx, fs, nhop);
+  printf("Total = %f LKFS\n", measure -> loudness_total);
+  for(int i = 0; i < measure -> size; i ++) {
+    FP_TYPE t = (FP_TYPE)(i + 2) * measure -> interval_48k / 48000;
+    printf("%f, %f LKFS\n", t, measure -> loudness_inst[i]);
+  }
+  delete_lkfs(measure);
+  return 1;
+}
+
 int main_deadfish() {
   x = wavread_fp(fp_wavin, & fs, & nbit, & nx);
   
@@ -224,6 +309,11 @@ int main_deadfish() {
     } else
     if(op.type == OPERATION_ABSNORMALIZE) {
       if(! main_absnormalize()) return 0;
+    } else
+    if(op.type == OPERATION_MEASURE_LKFS) {
+      nhop = round(fs * 0.1);
+      if(specified_thop != 0) nhop = round(specified_thop * fs);
+      if(! main_lkfs()) return 0;
     }
   }
 
@@ -238,7 +328,7 @@ int main(int argc, char** argv) {
   int c;
   fp_wavin = stdin;
   fp_wavout = stdout;
-  while((c = getopt(argc, argv, "a:d:r:s:c:n:i:h")) != -1) {
+  while((c = getopt(argc, argv, "a:d:r:s:c:n:li:h")) != -1) {
     int i;
     operation top_op;
     switch(c) {
@@ -285,6 +375,10 @@ int main(int argc, char** argv) {
     case 'n':
       top_op.type = OPERATION_ABSNORMALIZE;
       top_op.normalization_max = atof(optarg);
+      operation_chain[num_operation ++] = top_op;
+    break;
+    case 'l':
+      top_op.type = OPERATION_MEASURE_LKFS;
       operation_chain[num_operation ++] = top_op;
     break;
     case 'i':

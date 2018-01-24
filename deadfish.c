@@ -40,8 +40,8 @@ static void print_usage() {
     "  -d denoise-noise-profile\n"
     "  -r denoise-rate\n"
     "  -s smoothing-bandwidth\n"
-    "  -c compression-threshold,damping-ratio\n"
-    "  -n normalize-absolute-maximum\n"
+    "  -c compression-threshold,damping-ratio,(unit)\n"
+    "  -n normalize-absolute-maximum,(unit)\n"
     "  -l (measure-lkfs-loudness)\n"
     "  -i processing-interval\n");
   exit(1);
@@ -50,8 +50,10 @@ static void print_usage() {
 #define OPERATION_NOISE_PROFILE   0
 #define OPERATION_DENOISE         1
 #define OPERATION_COMPRESS        2
-#define OPERATION_ABSNORMALIZE    3
-#define OPERATION_MEASURE_LKFS    4
+#define OPERATION_COMPRESS_LKFS   3
+#define OPERATION_NORMALIZE_ABS   4
+#define OPERATION_NORMALIZE_LKFS  5
+#define OPERATION_MEASURE_LKFS    6
 
 typedef struct {
   int type;
@@ -68,7 +70,7 @@ FILE* fp_wavout = NULL;
 FP_TYPE denoise_rate = 1.0;
 FP_TYPE smoothing_bandwidth = 500.0;
 
-int specified_thop = 0;
+FP_TYPE specified_thop = 0;
 int nhop = 0; // will be sample-rate-dependent
 int nfft = 0;
 int pad_factor = 2;
@@ -84,22 +86,24 @@ operation operation_chain[128];
 int num_operation = 0;
 operation op; // the current operation
 
+#define db2mag(x) (pow(10.0, (x) / 20.0))
+
 typedef struct {
   FP_TYPE loudness_total;
   FP_TYPE* loudness_inst;
-  int size, interval_48k;
-} lkfs;
+  int size;
+  FP_TYPE interval;
+} loudness;
 
-static void delete_lkfs(lkfs* dst) {
+static void delete_loudness(loudness* dst) {
   if(dst == NULL) return;
   free(dst -> loudness_inst);
   free(dst);
 }
 
-static lkfs* lkfs_loudness(FP_TYPE* x, int nx, int fs, int nhop) {
+static loudness* lkfs_loudness(FP_TYPE* x, int nx, int fs, FP_TYPE thop) {
   // Resample to 48 kHz.
   FP_TYPE* x0 = rresample(x, nx, 48000.0f / fs, & nx);
-  nhop = nhop * 48000 / fs;
   fs = 48000;
   // 1st stage filtering
   FP_TYPE B1[3] = {1.53512485958697, -2.69169618940638, 1.19839281085285};
@@ -112,12 +116,13 @@ static lkfs* lkfs_loudness(FP_TYPE* x, int nx, int fs, int nhop) {
   FP_TYPE* x2 = filter(B2, 3, A2, 3, x1, nx);
   free(x1);
   // Measure the short-time power.
-  int framesize = nhop * 4;
-  int nfrm = max(1, (nx - framesize) / nhop);
+  int framesize = round(thop * 4 * fs);
+  int nfrm = max(1, (nx - framesize) / (thop * fs));
   FP_TYPE* z = calloc(nfrm, sizeof(FP_TYPE));
   FP_TYPE* l = calloc(nfrm, sizeof(FP_TYPE));
   for(int i = 0; i < nfrm; i ++) {
-    FP_TYPE* xfrm = fetch_frame(x2, nx, (i + 2) * nhop, framesize);
+    int center = (i + 2) * thop * fs;
+    FP_TYPE* xfrm = fetch_frame(x2, nx, center, framesize);
     for(int j = 0; j < framesize; j ++) z[i] += xfrm[j] * xfrm[j];
     z[i] /= framesize;
     l[i] = -0.691 + 10.0 * log10(z[i]);
@@ -147,12 +152,12 @@ static lkfs* lkfs_loudness(FP_TYPE* x, int nx, int fs, int nhop) {
   free(z);
   free(x2);
 
-  lkfs* ret = malloc(sizeof(lkfs));
+  loudness* ret = malloc(sizeof(loudness));
   ret -> loudness_total = power_count > 0 ?
     -0.691 + 10.0 * log10(power_sum / power_count) : -70.0;
   ret -> loudness_inst = l;
   ret -> size = nfrm;
-  ret -> interval_48k = nhop;
+  ret -> interval = thop;
   return ret;
 }
 
@@ -238,32 +243,52 @@ int main_denoise() {
   return 1;
 }
 
-int main_compress() {
+int main_compress(int use_lkfs) {
   int nfrm = nx / nhop;
   FP_TYPE* w = hanning(nhop * 2);
+  loudness* loudness_measure = NULL;
+  if(use_lkfs)
+    loudness_measure = lkfs_loudness(x, nx, fs, (FP_TYPE)nhop / fs);
+  
+  FP_TYPE* y = calloc(nx, sizeof(FP_TYPE));
   for(int i = 0; i < nfrm; i ++) {
     int center = i * nhop;
     FP_TYPE* xfrm = fetch_frame(x, nx, center, nhop * 2);
     FP_TYPE level = 0;
-    for(int j = 0; j < nhop * 2; j ++)
-      level = fmax(level, fabs(xfrm[j]));
-    FP_TYPE gain = 1.0;
-    if(level > op.compression_threshold) {
-      gain = ((level - op.compression_threshold) * op.compression_damping +
-        op.compression_threshold) / (level + M_EPS);
+    FP_TYPE gain = 0;
+    FP_TYPE threshold = op.compression_threshold;
+    if(loudness_measure != NULL) {
+      int loudness_idx = min(max(0, i - 2), loudness_measure -> size - 1);
+      level = loudness_measure -> loudness_inst[loudness_idx];
+    } else {
+      for(int j = 0; j < nhop * 2; j ++)
+        level = fmax(level, fabs(xfrm[j]));
+    }
+    if(level > threshold) {
+      gain = (threshold - level) * (1.0 - op.compression_damping);
+      if(loudness_measure != NULL) {
+        gain = db2mag(gain) - 1.0;
+      } else {
+        gain = gain / (level + M_EPS);
+      }
     }
     for(int j = 0; j < nhop * 2; j ++) {
       int idx = center + j - nhop;
       if(idx >= 0 && idx < nx)
-        x[idx] += xfrm[j] * w[j] * (gain - 1.0);
+        y[idx] += xfrm[j] * w[j] * gain;
     }
     free(xfrm);
   }
+  for(int i = 0; i < nx; i ++)
+    x[i] += y[i];
+  if(loudness_measure != NULL)
+    delete_loudness(loudness_measure);
+  free(y);
   free(w);
   return 1;
 }
 
-int main_absnormalize() {
+int main_normalize_abs() {
   FP_TYPE absmax = 0;
   for(int i = 0; i < nx; i ++)
     absmax = fmax(absmax, fabs(x[i]));
@@ -273,14 +298,22 @@ int main_absnormalize() {
   return 1;
 }
 
-int main_lkfs() {
-  lkfs* measure = lkfs_loudness(x, nx, fs, nhop);
+int main_normalize_lkfs() {
+  loudness* measure = lkfs_loudness(x, nx, fs, 0.1);
+  FP_TYPE gain = db2mag(op.normalization_max - measure -> loudness_total);
+  for(int i = 0; i < nx; i ++) x[i] *= gain;
+  delete_loudness(measure);
+  return 1;
+}
+
+int main_lkfs(FP_TYPE thop) {
+  loudness* measure = lkfs_loudness(x, nx, fs, thop);
   printf("Total = %f LKFS\n", measure -> loudness_total);
   for(int i = 0; i < measure -> size; i ++) {
-    FP_TYPE t = (FP_TYPE)(i + 2) * measure -> interval_48k / 48000;
+    FP_TYPE t = (FP_TYPE)(i + 2) * measure -> interval;
     printf("%f, %f LKFS\n", t, measure -> loudness_inst[i]);
   }
-  delete_lkfs(measure);
+  delete_loudness(measure);
   return 1;
 }
 
@@ -305,15 +338,23 @@ int main_deadfish() {
     if(op.type == OPERATION_COMPRESS) {
       nhop = round(fs * 0.03);
       if(specified_thop != 0) nhop = round(specified_thop * fs);
-      if(! main_compress()) return 0;
+      if(! main_compress(0)) return 0;
     } else
-    if(op.type == OPERATION_ABSNORMALIZE) {
-      if(! main_absnormalize()) return 0;
-    } else
-    if(op.type == OPERATION_MEASURE_LKFS) {
+    if(op.type == OPERATION_COMPRESS_LKFS) {
       nhop = round(fs * 0.1);
       if(specified_thop != 0) nhop = round(specified_thop * fs);
-      if(! main_lkfs()) return 0;
+      if(! main_compress(1)) return 0;
+    } else
+    if(op.type == OPERATION_NORMALIZE_ABS) {
+      if(! main_normalize_abs()) return 0;
+    } else
+    if(op.type == OPERATION_NORMALIZE_LKFS) {
+      if(! main_normalize_lkfs()) return 0;
+    } else
+    if(op.type == OPERATION_MEASURE_LKFS) {
+      FP_TYPE thop = 0.1;
+      if(specified_thop != 0) thop = specified_thop;
+      if(! main_lkfs(thop)) return 0;
     }
   }
 
@@ -329,7 +370,7 @@ int main(int argc, char** argv) {
   fp_wavin = stdin;
   fp_wavout = stdout;
   while((c = getopt(argc, argv, "a:d:r:s:c:n:li:h")) != -1) {
-    int i;
+    int i = 0;
     operation top_op;
     switch(c) {
     case 'a':
@@ -357,7 +398,6 @@ int main(int argc, char** argv) {
       smoothing_bandwidth = atof(optarg);
     break;
     case 'c':
-      i = 0;
       while(optarg[i] != ',') {
         if(optarg[i] == 0) {
           fprintf(stderr, "-c option requires two comma-separated "
@@ -370,10 +410,28 @@ int main(int argc, char** argv) {
       top_op.type = OPERATION_COMPRESS;
       top_op.compression_threshold = atof(optarg);
       top_op.compression_damping = atof(optarg + i + 1);
+      i ++;
+      while(optarg[i] != 0) {
+        if(optarg[i] == ',') {
+          if(! strcmp(optarg + i + 1, "k"))
+            top_op.type = OPERATION_COMPRESS_LKFS;
+          break;
+        }
+        i ++;
+      }
       operation_chain[num_operation ++] = top_op;
     break;
     case 'n':
-      top_op.type = OPERATION_ABSNORMALIZE;
+      top_op.type = OPERATION_NORMALIZE_ABS;
+      while(optarg[i] != 0) {
+        if(optarg[i] == ',') {
+          if(! strcmp(optarg + i + 1, "k"))
+            top_op.type = OPERATION_NORMALIZE_LKFS;
+          optarg[i] = 0;
+          break;
+        }
+        i ++;
+      }
       top_op.normalization_max = atof(optarg);
       operation_chain[num_operation ++] = top_op;
     break;

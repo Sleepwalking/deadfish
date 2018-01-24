@@ -32,13 +32,21 @@ Apply look-ahead compression to input.wav with threshold at 0.1 amplitude level 
 
 `deadfish input.wav output.wav -c 0.1,0.2`
 
+Apply look-ahead compression to input.wav with threshold at -25 LKFS and a compression ratio of 0.2.
+
+`deadfish input.wav output.wav -c -25,0.2,k`
+
 The time-resolution can be controlled by the `-i` option; the unit is in seconds.
 
-### Absolute Normalization
+### Normalization
 
 Set the maximum amplitude to 0.5.
 
 `deadfish input.wav output.wav -n 0.5`
+
+Set the loudness to -20 LKFS.
+
+`deadfish input.wav output.wav -n -20,k`
 
 ### Cascading Operations
 

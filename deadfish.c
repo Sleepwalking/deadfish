@@ -339,6 +339,7 @@ int main_inverse_filter(FP_TYPE thop) {
     for(int j = 0; j < window_size + order; j ++) {
       int idx = left + j;
       xfrm[j] = (idx >= 0 && idx < nx) ? x[idx] : 0.0;
+      xfrm[j] += randu() * 1e-8;
     }
     FP_TYPE* a = lpc(xfrm, window_size + order, order, NULL);
     for(int j = 0; j < window_size; j ++) {

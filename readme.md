@@ -48,13 +48,33 @@ Set the loudness to -20 LKFS.
 
 `deadfish input.wav output.wav -n -20,k`
 
+### Inverse Filtering
+
+Deadfish supports LPC (Linear Predictive Coding)-based inverse filtering.
+
+Inverse filtering in this case means estimating a filter from each short piece of waveform and apply the filter back to the input to "undo" the filtering. Doing so often reveals some hidden structure in the audio, for example, the glottal excitation pattern when the input is a speech signal.
+
+Perform inverse filtering at a 0.025 seconds interval, using 24th-order LPC.
+
+`deadfish input.wav inverse.wav -I 24,0.025`
+
+The inverse filtering operation also magnifies some audio defects such as clipping and skipping.
+
+### Clip Detection
+
+`deadfish input.wav /dev/null -t 0.999 > clips.txt`
+
+Then view `clips.txt` or load it into Audacity.
+
 ### Cascading Operations
 
 Reduce noise -> normalize to 0.3 absolute amplitude -> compress -> normalize again
 
 `deadfish input.wav output.wav -d noise-profile -n 0.3 -c 0.1,0.2 -n 0.3`
 
-### 
+Detect audio defects by cascading inverse filtering, normalization and threshold detection.
+
+`deadfish input.wav /dev/null -I 18,0.025 -n 1.0 -t 0.5 > defects.txt`
 
 How to Compile
 ---

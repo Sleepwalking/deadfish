@@ -44,6 +44,7 @@ static void print_usage() {
     "  -n normalize-absolute-maximum,(unit)\n"
     "  -I inverse-filter-order,window-size\n"
     "  -l (measure-lkfs-loudness)\n"
+    "  -t detect-threshold\n"
     "  -i processing-interval\n");
   exit(1);
 }
@@ -56,6 +57,7 @@ static void print_usage() {
 #define OPERATION_NORMALIZE_LKFS  5
 #define OPERATION_MEASURE_LKFS    6
 #define OPERATION_INVERSE_FILER   7
+#define OPERATION_DETECT_THOLD    8
 
 typedef struct {
   int type;
@@ -358,6 +360,26 @@ int main_inverse_filter(FP_TYPE thop) {
   return 1;
 }
 
+int main_detect_threshold() {
+  FP_TYPE threshold = op.normalization_max;
+  int idx_begin = 0;
+  int hold = 0;
+  for(int i = 0; i < nx; i ++) {
+    if(fabs(x[i]) >= threshold) {
+      if(! hold) {
+        idx_begin = i;
+        hold = 1;
+      }
+    } else {
+      if(hold) {
+        printf("%f\t%f\n", (FP_TYPE)idx_begin / fs, (FP_TYPE)(i - 1) / fs);
+        hold = 0;
+      }
+    }
+  }
+  return 1;
+}
+
 int main_deadfish() {
   x = wavread_fp(fp_wavin, & fs, & nbit, & nx);
   
@@ -401,6 +423,9 @@ int main_deadfish() {
       FP_TYPE thop = op.window_size / 4;
       if(specified_thop != 0) thop = specified_thop;
       if(! main_inverse_filter(thop)) return 0;
+    } else
+    if(op.type == OPERATION_DETECT_THOLD) {
+      if(! main_detect_threshold()) return 0;
     }
   }
 
@@ -415,7 +440,7 @@ int main(int argc, char** argv) {
   int c;
   fp_wavin = stdin;
   fp_wavout = stdout;
-  while((c = getopt(argc, argv, "a:d:r:s:c:n:I:li:h")) != -1) {
+  while((c = getopt(argc, argv, "a:d:r:s:c:n:I:lt:i:h")) != -1) {
     int i = 0;
     operation top_op;
     switch(c) {
@@ -498,6 +523,11 @@ int main(int argc, char** argv) {
     break;
     case 'l':
       top_op.type = OPERATION_MEASURE_LKFS;
+      operation_chain[num_operation ++] = top_op;
+    break;
+    case 't':
+      top_op.type = OPERATION_DETECT_THOLD;
+      top_op.normalization_max = atof(optarg);
       operation_chain[num_operation ++] = top_op;
     break;
     case 'i':

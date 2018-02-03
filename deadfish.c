@@ -42,6 +42,7 @@ static void print_usage() {
     "  -s smoothing-bandwidth\n"
     "  -c compression-threshold,damping-ratio,(unit)\n"
     "  -n normalize-absolute-maximum,(unit)\n"
+    "  -I inverse-filter-order,window-size\n"
     "  -l (measure-lkfs-loudness)\n"
     "  -i processing-interval\n");
   exit(1);
@@ -54,12 +55,15 @@ static void print_usage() {
 #define OPERATION_NORMALIZE_ABS   4
 #define OPERATION_NORMALIZE_LKFS  5
 #define OPERATION_MEASURE_LKFS    6
+#define OPERATION_INVERSE_FILER   7
 
 typedef struct {
   int type;
+  int order;
   FP_TYPE compression_threshold;
   FP_TYPE compression_damping;
   FP_TYPE normalization_max;
+  FP_TYPE window_size;
 } operation;
 
 FILE* fp_analyze_noise_profile = NULL;
@@ -317,6 +321,42 @@ int main_lkfs(FP_TYPE thop) {
   return 1;
 }
 
+int main_inverse_filter(FP_TYPE thop) {
+  int window_size = round(op.window_size * fs);
+  int order = op.order;
+  int nfrm = (FP_TYPE)nx / fs / thop;
+  FP_TYPE* y = calloc(nx, sizeof(FP_TYPE));
+  FP_TYPE* xfrm = calloc(window_size + order, sizeof(FP_TYPE));
+  FP_TYPE* yfrm = calloc(window_size, sizeof(FP_TYPE));
+  FP_TYPE* w = hanning(window_size);
+  FP_TYPE normalize_factor = 0;
+  for(int i = 0; i < window_size; i += thop * fs)
+    normalize_factor += w[i];
+
+  for(int i = 0; i < nfrm; i ++) {
+    int center = floor(i * thop * fs);
+    int left = center - window_size / 2 - order;
+    for(int j = 0; j < window_size + order; j ++) {
+      int idx = left + j;
+      xfrm[j] = (idx >= 0 && idx < nx) ? x[idx] : 0.0;
+    }
+    FP_TYPE* a = lpc(xfrm, window_size + order, order, NULL);
+    for(int j = 0; j < window_size; j ++) {
+      yfrm[j] = xfrm[j + order];
+      for(int k = 1; k <= order; k ++)
+        yfrm[j] += xfrm[j + order - k] * a[k];
+      yfrm[j] *= w[j] / normalize_factor;
+      int idx = center - window_size / 2 + j;
+      if(idx >= 0 && idx < nx)
+        y[idx] += yfrm[j];
+    }
+    free(a);
+  }
+  free(xfrm); free(yfrm); free(w);
+  free(x); x = y;
+  return 1;
+}
+
 int main_deadfish() {
   x = wavread_fp(fp_wavin, & fs, & nbit, & nx);
   
@@ -355,6 +395,11 @@ int main_deadfish() {
       FP_TYPE thop = 0.1;
       if(specified_thop != 0) thop = specified_thop;
       if(! main_lkfs(thop)) return 0;
+    } else
+    if(op.type == OPERATION_INVERSE_FILER) {
+      FP_TYPE thop = op.window_size / 4;
+      if(specified_thop != 0) thop = specified_thop;
+      if(! main_inverse_filter(thop)) return 0;
     }
   }
 
@@ -369,7 +414,7 @@ int main(int argc, char** argv) {
   int c;
   fp_wavin = stdin;
   fp_wavout = stdout;
-  while((c = getopt(argc, argv, "a:d:r:s:c:n:li:h")) != -1) {
+  while((c = getopt(argc, argv, "a:d:r:s:c:n:I:li:h")) != -1) {
     int i = 0;
     operation top_op;
     switch(c) {
@@ -433,6 +478,21 @@ int main(int argc, char** argv) {
         i ++;
       }
       top_op.normalization_max = atof(optarg);
+      operation_chain[num_operation ++] = top_op;
+    break;
+    case 'I':
+      while(optarg[i] != ',') {
+        if(optarg[i] == 0) {
+          fprintf(stderr, "-I option requires two comma-separated "
+            "parameters.\n");
+          exit(1);
+        }
+        i ++;
+      }
+      optarg[i]= 0;
+      top_op.type = OPERATION_INVERSE_FILER;
+      top_op.order = atoi(optarg);
+      top_op.window_size = atof(optarg + i + 1);
       operation_chain[num_operation ++] = top_op;
     break;
     case 'l':

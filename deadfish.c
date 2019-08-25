@@ -30,8 +30,8 @@
   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+#include <ciglet/ciglet.h>
 #include <getopt.h>
-#include "external/ciglet/ciglet.h"
 
 static void print_usage() {
   fprintf(stderr,

@@ -1,6 +1,8 @@
 PREFIX = /usr
 CC = $(CROSS)gcc
 
+CONFIG = Debug
+
 CIGLET_PREFIX = /usr
 CIGLET_A = $(CIGLET_PREFIX)/lib/libciglet.a
 CIGLET_INCLUDE = $(CIGLET_PREFIX)/include/
@@ -18,12 +20,16 @@ CFLAGS_COMMON = -DFP_TYPE=float -std=c99 -Wall -Wno-unused-result -fPIC \
   $(CFLAGS_PLAT) -I$(CIGLET_INCLUDE)
 CFLAGS_DBG = $(CFLAGS_COMMON) -Og -g
 CFLAGS_REL = $(CFLAGS_COMMON) -Ofast
-CFLAGS = $(CFLAGS_DBG)
+ifeq ($(CONFIG), Debug)
+  CFLAGS = $(CFLAGS_DBG)
+else
+  CFLAGS = $(CFLAGS_REL)
+endif
 
 default: deadfish
 
 deadfish: $(OBJS)
-	$(CC) $(CFLAGS) -o deadfish $(OBJS) -lm $(CIGLET_A)
+	$(CC) $(CFLAGS) -o deadfish $(OBJS) $(CIGLET_A) -lm
 
 $(OUT_DIR)/deadfish.o: deadfish.c
 

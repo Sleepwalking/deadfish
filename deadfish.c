@@ -429,8 +429,20 @@ int main_deadfish() {
     }
   }
 
-  if(fp_wavout != NULL)
+  if(fp_wavout != NULL) {
+    FP_TYPE max_level = 0;
+    for(int i = 0; i < nx; i ++) {
+      if(fabs(x[i]) > max_level)
+        max_level = fabs(x[i]);
+    }
+    max_level += 1e-3;
+    if(max_level > 1) {
+      for(int i = 0; i < nx; i ++)
+        x[i] /= max_level;
+    }
+    fprintf(stderr, "%f\n", max_level);
     wavwrite_fp(x, nx, fs, nbit, fp_wavout);
+  }
   free(x);
   return 1;
 }
